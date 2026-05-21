@@ -25,6 +25,7 @@ Layout:
 from __future__ import annotations
 
 import sys
+import datetime
 import threading
 from pathlib import Path
 
@@ -81,8 +82,6 @@ class App(ctk.CTk):
         src_hdr = ctk.CTkFrame(src_frame, fg_color="transparent")
         src_hdr.pack(fill="x", padx=8, pady=(4, 2))
         ctk.CTkLabel(src_hdr, text="Source Folders", font=SEC_FONT).pack(side="left")
-        ctk.CTkButton(src_hdr, text="Ingest Files", height=24, width=90,
-                      command=self._run_ingest).pack(side="right")
 
         self.var_nb = ctk.StringVar(value=self.cfg.get("nb_kb_path", ""))
         self.var_dt = ctk.StringVar(value=self.cfg.get("dt_kb_path", ""))
@@ -91,6 +90,13 @@ class App(ctk.CTk):
         self._path_row(src_frame, "NB KB:", self.var_nb, LABEL_W, ENTRY_W)
         self._path_row(src_frame, "DT KB:", self.var_dt, LABEL_W, ENTRY_W)
         self._path_row(src_frame, "Peripheral:", self.var_periph, LABEL_W, ENTRY_W)
+
+        btn_row = ctk.CTkFrame(src_frame, fg_color="transparent")
+        btn_row.pack(fill="x", padx=8, pady=(3, 6))
+        ctk.CTkButton(btn_row, text="Ingest Files", height=26, width=100,
+                      command=self._run_ingest).pack(side="right")
+        ctk.CTkButton(btn_row, text="Check Files", height=26, width=100,
+                      command=self._run_check_files).pack(side="right", padx=(0, 8))
 
         # ──  Output Paths (2×2 layout) ──
         out_frame = ctk.CTkFrame(self)
@@ -252,6 +258,131 @@ class App(ctk.CTk):
         self.log_box.configure(state="normal")
         self.log_box.delete("1.0", "end")
         self.log_box.configure(state="disabled")
+
+    # ── check files ──────────────────────────────────────────────────────────
+
+    def _run_check_files(self):
+        self._save_cfg()
+        win = ctk.CTkToplevel(self)
+        win.title("Check Files")
+        win.geometry("820x500")
+        win.grab_set()
+        win.lift()
+        win.focus_force()
+
+        scroll = ctk.CTkScrollableFrame(win)
+        scroll.pack(fill="both", expand=True, padx=10, pady=(8, 4))
+
+        scanning_lbl = ctk.CTkLabel(scroll, text="Scanning folders…", anchor="w",
+                                    font=ctk.CTkFont(size=12))
+        scanning_lbl.pack(anchor="w", padx=6, pady=6)
+
+        btn_bar = ctk.CTkFrame(win, fg_color="transparent")
+        btn_bar.pack(fill="x", padx=10, pady=(2, 8))
+        ctk.CTkButton(btn_bar, text="Close", width=80, height=28,
+                      command=win.destroy).pack(side="right")
+
+        threading.Thread(
+            target=self._check_files_worker, args=(win, scroll, scanning_lbl),
+            daemon=True,
+        ).start()
+
+    def _check_files_worker(self, win, scroll, scanning_lbl):
+        from master_consolidate.ingestion.ingest import _find_master_folder, discover_suppliers
+
+        today = datetime.date.today()
+        SEC_FONT  = ctk.CTkFont(size=12, weight="bold")
+        HDR_FONT  = ctk.CTkFont(size=11, weight="bold")
+        ROW_FONT  = ctk.CTkFont(size=11)
+
+        segments = [
+            ("NB KB",      "NB",         self.var_nb.get()),
+            ("DT KB",      "DT",         self.var_dt.get()),
+            ("Peripheral", "Peripheral", self.var_periph.get()),
+        ]
+
+        # Collect all data first (off the main thread)
+        seg_results = []   # list of (seg_label, items)
+        # items is a list of:
+        #   ("error", message)  or  ("file", supplier, filename, mtime_str, is_old)
+        for seg_label, seg_key, path_str in segments:
+            if not path_str:
+                seg_results.append((seg_label, [("error", "No path configured.")])); continue
+            src_path = Path(path_str)
+            try:
+                master_folder = _find_master_folder(src_path, seg_key)
+            except Exception as exc:
+                seg_results.append((seg_label, [("error", str(exc))])); continue
+            if master_folder is None:
+                seg_results.append((seg_label, [("error", "'Master price table' folder not found.")])); continue
+            try:
+                suppliers = discover_suppliers(master_folder)
+            except Exception as exc:
+                seg_results.append((seg_label, [("error", str(exc))])); continue
+            if not suppliers:
+                seg_results.append((seg_label, [("error", "(no supplier subfolders found)")])); continue
+            items = []
+            for supplier, excel_path in suppliers.items():
+                mtime = datetime.datetime.fromtimestamp(excel_path.stat().st_mtime)
+                is_old = (mtime.year != today.year or mtime.month != today.month)
+                items.append(("file", supplier, excel_path.name,
+                              mtime.strftime("%Y-%m-%d  %H:%M"), is_old))
+            seg_results.append((seg_label, items))
+
+        def build():
+            scanning_lbl.destroy()
+            has_warning = [False]
+
+            for seg_label, items in seg_results:
+                # Segment header bar
+                hdr_bar = ctk.CTkFrame(scroll, fg_color=("gray82", "gray28"))
+                hdr_bar.pack(fill="x", pady=(10, 2), padx=2)
+                ctk.CTkLabel(hdr_bar, text=seg_label, font=SEC_FONT, anchor="w").pack(
+                    side="left", padx=10, pady=3)
+
+                if items and items[0][0] == "error":
+                    color = "gray" if "No path" in items[0][1] else "#E8A020"
+                    ctk.CTkLabel(scroll, text=f"  {items[0][1]}",
+                                 anchor="w", font=ROW_FONT, text_color=color
+                                 ).pack(fill="x", padx=14, pady=2)
+                    continue
+
+                # Column header row
+                col_hdr = ctk.CTkFrame(scroll, fg_color="transparent")
+                col_hdr.pack(fill="x", padx=14, pady=(2, 0))
+                ctk.CTkLabel(col_hdr, text="Supplier",      font=HDR_FONT, width=185, anchor="w").pack(side="left")
+                ctk.CTkLabel(col_hdr, text="File Name",     font=HDR_FONT, width=330, anchor="w").pack(side="left")
+                ctk.CTkLabel(col_hdr, text="Last Modified", font=HDR_FONT, width=145, anchor="w").pack(side="left")
+
+                for kind, *rest in items:
+                    supplier, filename, mtime_str, is_old = rest
+                    row = ctk.CTkFrame(scroll, fg_color="transparent")
+                    row.pack(fill="x", padx=14, pady=1)
+                    date_color = "#E8A020" if is_old else ("gray60", "gray70")
+                    ctk.CTkLabel(row, text=supplier,  font=ROW_FONT, width=185, anchor="w").pack(side="left")
+                    ctk.CTkLabel(row, text=filename,  font=ROW_FONT, width=330, anchor="w").pack(side="left")
+                    ctk.CTkLabel(row, text=mtime_str, font=ROW_FONT, width=145, anchor="w",
+                                 text_color=date_color).pack(side="left")
+                    if is_old:
+                        ctk.CTkLabel(row, text="⚠ Not this month", font=ROW_FONT,
+                                     text_color="#E8A020").pack(side="left", padx=(4, 0))
+                        has_warning[0] = True
+                    else:
+                        ctk.CTkLabel(row, text="✓", font=ROW_FONT,
+                                     text_color="#4CAF50").pack(side="left", padx=(4, 0))
+
+            # Summary line
+            if has_warning[0]:
+                summary_text  = "⚠  Some files were not updated this month — please verify before ingesting."
+                summary_color = "#E8A020"
+            else:
+                summary_text  = "✓  All files are from this month."
+                summary_color = "#4CAF50"
+            ctk.CTkLabel(scroll, text=summary_text, anchor="w",
+                         font=ctk.CTkFont(size=11), text_color=summary_color
+                         ).pack(anchor="w", padx=8, pady=(12, 4))
+
+        win.after(0, build)
 
     # ── ingest ───────────────────────────────────────────────────────────────
 
