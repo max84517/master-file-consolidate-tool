@@ -80,6 +80,9 @@ def discover_suppliers(segment_root: Path) -> dict[str, Path]:
     for item in sorted(segment_root.iterdir()):
         if not item.is_dir():
             continue
+        # Skip "Consolidated Master price table_*" output folders
+        if item.name.lower().startswith("consolidated master price table"):
+            continue
         latest = _latest_excel(item)
         if latest:
             result[item.name] = latest
