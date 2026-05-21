@@ -15,6 +15,8 @@ A Python desktop application that consolidates HP Input Device master price tabl
 - **Merged-cell handling** — anchor values are propagated to all secondary cells during ingestion
 - **Typo-tolerant column matching** — known header typos (e.g. `IncoTrem` → `IncoTerm`) are normalised via an alias table
 - **Column-name alignment** — rows from different sheets/suppliers are aligned by column name, not index position; missing feature columns fill as `N/A`, missing value columns fill as `0`
+- **Strict value-column format** — only columns matching `<keyword> <Month> <Year>` (e.g. `HP Cost Nov 2025`) are kept; bare `ODM Cost` / `Rebate` columns without a date suffix are automatically discarded
+- **Clean output guarantee** — any column with a blank header is removed from the output before saving; prevents unnamed columns with stray values
 - **FY coverage check** — instantly shows which suppliers are missing a sheet for the selected FY (amber warning, green all-clear)
 - **Config persistence** — all folder paths saved to `config.json` and restored on next launch
 

@@ -54,6 +54,16 @@ VALUE_KEYWORDS = {
 _RE_NB_SHEET = re.compile(r"^fy(\d+)[cb]nb$")
 _RE_OTHER_SHEET = re.compile(r"^fy(\d+)$")
 
+# Value column names must follow "<keyword> <Month> <Year>" format,
+# e.g. "HP Cost Nov 2025", "ODM Cost April 2026", "Rebate Jan 2024".
+# Columns that match a keyword but lack a month+year suffix are rejected.
+_RE_VALUE_COL = re.compile(
+    r"^.+\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec"
+    r"|january|february|march|april|june|july|august|september|october|november|december)"
+    r"\s+\d{4}$",
+    re.IGNORECASE,
+)
+
 
 # Known header typos across supplier files → canonical MANDATORY_COLS name.
 # key: normalised (lowercase, no extra spaces), value: canonical display name.
@@ -84,6 +94,17 @@ def _norm(s: str) -> str:
 
 
 # ── sheet matching ───────────────────────────────────────────────────────────
+
+def _drop_unnamed_cols(ws) -> None:
+    """Delete any column whose header cell (row 1) is blank or None."""
+    to_delete = [
+        col_idx
+        for col_idx in range(ws.max_column, 0, -1)
+        if not str(ws.cell(row=1, column=col_idx).value or "").strip()
+    ]
+    for col_idx in to_delete:
+        ws.delete_cols(col_idx)
+
 
 def _matching_sheets(wb: Workbook, segment: str, fy_xx: str) -> list[str]:
     """Return sheet names in wb that match the chosen FY for the given segment."""
@@ -142,6 +163,8 @@ def _clean_sheet(
                 is_value_col.append(False)
                 seen_mandatory.add(canon.lower())
         elif any(kw in h.lower() for kw in kw_lower):
+            if not _RE_VALUE_COL.match(h):
+                continue  # e.g. bare "ODM Cost" or "Rebate" without month+year
             keep_indices.append(i)
             canonical_names.append(h)
             is_value_col.append(True)
@@ -272,6 +295,7 @@ def consolidate_segment(
     filename = f"Consolidated Master price table_{segment}_{today}.xlsx"
     out_file = output_path / filename
     output_path.mkdir(parents=True, exist_ok=True)
+    _drop_unnamed_cols(ws_out)
     wb_out.save(out_file)
     return out_file
 
@@ -318,5 +342,6 @@ def consolidate_all(
     filename = f"Final Consolidated Master price table_{today}.xlsx"
     out_file = output_path / filename
     output_path.mkdir(parents=True, exist_ok=True)
+    _drop_unnamed_cols(ws_out)
     wb_out.save(out_file)
     return out_file
