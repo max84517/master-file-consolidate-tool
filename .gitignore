@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environment
+.venv/
+
+# Poetry
+poetry.lock
+
+# Config (contains local paths)
+config.json
+
+# Data — source ingested files and outputs are local only
+data/source/
+data/result_by_segment/
+data/consolidate_all/
+
+# Build / dist
+dist/
+build/
+*.spec
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,22 @@
+[project]
+name = "master-file-consolidate-tool"
+version = "0.1.0"
+description = "Master file consolidation tool"
+authors = [
+    {name = "max84517"}
+]
+requires-python = "^3.11"
+dependencies = [
+    "openpyxl (>=3.1.5,<4.0.0)",
+    "customtkinter (>=5.2.2,<6.0.0)"
+]
+
+[project.scripts]
+master-consolidate = "master_consolidate.main:main"
+
+[tool.poetry]
+packages = [{include = "master_consolidate", from = "src"}]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
