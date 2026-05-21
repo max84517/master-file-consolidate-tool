@@ -4,8 +4,8 @@ and copies them to data/source/<Segment>/.
 
 Sheet-matching rules:
   NB  : sheets whose name (normalised: lowercase, no spaces) matches
-        /^fy\d+[cb]nb$/  e.g. "FY26 cNB", "fy26bNB", "Fy 26 C NB"
-  DT/Peripheral: sheets whose name (normalised) matches /^fy\d+$/
+        /^fy[0-9]+[cb]nb$/  e.g. "FY26 cNB", "fy26bNB", "Fy 26 C NB"
+  DT/Peripheral: sheets whose name (normalised) matches /^fy[0-9]+$/
                   e.g. "FY26", "fy 26"
 
 The newest Excel in each supplier folder is selected by file mtime.
