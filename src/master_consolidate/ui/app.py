@@ -454,16 +454,31 @@ class App(ctk.CTk):
             "Peripheral": Path(self.var_out_periph.get()),
         }
         results: dict[str, Path] = {}
+        all_corrections: list[dict] = []
         for seg in ("NB", "DT", "Peripheral"):
             source_dir = SOURCE_DIR / seg
             try:
-                out_file = consolidate_segment(
-                    seg, source_dir, fy, keywords, out_paths[seg]
+                out_file, corrections = consolidate_segment(
+                    seg, source_dir, fy, keywords, out_paths[seg],
+                    log_fn=self._log,
                 )
                 results[seg] = out_file
+                all_corrections.extend(corrections)
                 self._log(f"[{seg}] Saved → {out_file}")
             except Exception as exc:
                 self._log(f"[{seg}] ERROR: {exc}")
+
+        # ── FY year correction summary ──
+        if all_corrections:
+            self._log("─" * 55)
+            self._log(f"⚠ FY Year Correction Summary ({len(all_corrections)} correction(s)):")
+            for c in all_corrections:
+                self._log(
+                    f"  [{c['segment']}] {c['supplier']} ({c['sheet']}): "
+                    f"\"{c['original']}\" → \"{c['corrected']}\""
+                )
+            self._log("─" * 55)
+
         self._log("=== Consolidation by Segment complete ===")
         return results
 

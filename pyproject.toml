@@ -1,6 +1,6 @@
 [project]
 name = "master-file-consolidate-tool"
-version = "0.1.0"
+version = "0.1.4"
 description = "Master file consolidation tool"
 authors = [
     {name = "max84517"}

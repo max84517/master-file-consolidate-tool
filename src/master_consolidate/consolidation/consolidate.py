@@ -64,6 +64,57 @@ _RE_VALUE_COL = re.compile(
     re.IGNORECASE,
 )
 
+# ── HP Fiscal Year year-correction helpers ───────────────────────────────────
+# HP FY starts Nov 1 and ends Oct 31 of the next calendar year.
+# e.g. FY26 = Nov 2025 … Oct 2026
+#   Nov, Dec → calendar year 2000+FY-1
+#   Jan–Oct  → calendar year 2000+FY
+
+_MONTH_NUM: dict[str, int] = {
+    "jan": 1, "january": 1,
+    "feb": 2, "february": 2,
+    "mar": 3, "march": 3,
+    "apr": 4, "april": 4,
+    "may": 5,
+    "jun": 6, "june": 6,
+    "jul": 7, "july": 7,
+    "aug": 8, "august": 8,
+    "sep": 9, "september": 9,
+    "oct": 10, "october": 10,
+    "nov": 11, "november": 11,
+    "dec": 12, "december": 12,
+}
+
+_RE_EXTRACT_MONTH_YEAR = re.compile(
+    r"^(.*?)\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec"
+    r"|january|february|march|april|june|july|august|september|october|november|december)"
+    r"\s+(\d{4})$",
+    re.IGNORECASE,
+)
+
+
+def _expected_year_for_month(month_str: str, fy_xx: str) -> int:
+    """Return the expected calendar year for *month_str* in HP FY *fy_xx*."""
+    fy_num = int(fy_xx)
+    month_num = _MONTH_NUM.get(month_str.lower(), 0)
+    return (2000 + fy_num - 1) if month_num >= 11 else (2000 + fy_num)
+
+
+def _correct_value_col_year(header: str, fy_xx: str) -> tuple[str, bool]:
+    """
+    Check whether the year in a value-column header matches HP FY rules.
+    Returns (corrected_header, was_corrected).
+    If the header does not match the expected pattern, return it unchanged.
+    """
+    m = _RE_EXTRACT_MONTH_YEAR.match(header)
+    if not m:
+        return header, False
+    prefix, month, year_str = m.group(1), m.group(2), m.group(3)
+    expected = _expected_year_for_month(month, fy_xx)
+    if int(year_str) == expected:
+        return header, False
+    return f"{prefix} {month} {expected}", True
+
 
 # Known header typos across supplier files → canonical MANDATORY_COLS name.
 # key: normalised (lowercase, no extra spaces), value: canonical display name.
@@ -127,16 +178,19 @@ def _matching_sheets(wb: Workbook, segment: str, fy_xx: str) -> list[str]:
 def _clean_sheet(
     ws,
     value_keywords: list[str],
-) -> tuple[list[str], list[list]]:
+    fy_xx: str = "",
+) -> tuple[list[str], list[list], list[tuple[str, str]]]:
     """
-    Clean one worksheet and return (header, data_rows).
-    header  — list of canonical column names (row 2 of source, normalised).
-    data_rows — list of rows (each a list aligned to header).
-    Returns ([], []) if no usable columns found.
+    Clean one worksheet and return (header, data_rows, corrections).
+    header      — list of canonical column names (row 2 of source, normalised).
+    data_rows   — list of rows (each a list aligned to header).
+    corrections — list of (original_header, corrected_header) pairs where the
+                  calendar year was adjusted to match HP FY rules.
+    Returns ([], [], []) if no usable columns found.
     """
     all_rows = list(ws.iter_rows(values_only=True))
     if len(all_rows) < 2:
-        return [], []
+        return [], [], []
 
     header_raw = list(all_rows[1])  # row 2 (0-indexed)
 
@@ -152,6 +206,7 @@ def _clean_sheet(
     keep_indices: list[int] = []
     canonical_names: list[str] = []
     is_value_col: list[bool] = []   # True = value col (None→0), False = feature col (None→"")
+    corrections: list[tuple[str, str]] = []
 
     for i, h in enumerate(raw_headers):
         canon = _canonical_mandatory(h)
@@ -165,12 +220,17 @@ def _clean_sheet(
         elif any(kw in h.lower() for kw in kw_lower):
             if not _RE_VALUE_COL.match(h):
                 continue  # e.g. bare "ODM Cost" or "Rebate" without month+year
+            if fy_xx:
+                corrected_h, was_corrected = _correct_value_col_year(h, fy_xx)
+                if was_corrected:
+                    corrections.append((h, corrected_h))
+                h = corrected_h
             keep_indices.append(i)
             canonical_names.append(h)
             is_value_col.append(True)
 
     if not keep_indices:
-        return [], []
+        return [], [], []
 
     # Find Platforms/Project index (for blank-row filtering)
     try:
@@ -193,7 +253,7 @@ def _clean_sheet(
                 continue
         data_rows.append(kept)
 
-    return canonical_names, data_rows
+    return canonical_names, data_rows, corrections
 
 
 # ── segment consolidation ────────────────────────────────────────────────────
@@ -204,23 +264,43 @@ def consolidate_segment(
     fy: str,
     value_keywords: list[str],
     output_path: Path,
-) -> Path:
+    log_fn=None,  # callable(str) | None — for real-time correction logging
+) -> tuple[Path, list[dict]]:
     """
     Consolidate all supplier Excels for one segment into a single output Excel.
     Uses column-name alignment so sheets with different column sets or typos
     are handled correctly.
+
+    Returns (output_file, corrections) where corrections is a list of dicts:
+      {"segment", "supplier", "sheet", "original", "corrected"}
     """
     fy_xx = fy[2:]
+    all_corrections: list[dict] = []
 
     # ── Pass 1: collect cleaned (header, rows) from every matching sheet ──
     all_data: list[tuple[list[str], list[list]]] = []
     for xf in sorted(source_dir.glob("*.xlsx")):
+        supplier_name = xf.stem
         try:
             wb = load_workbook(xf, data_only=True)
         except Exception:
             continue
         for sn in _matching_sheets(wb, segment, fy_xx):
-            header, rows = _clean_sheet(wb[sn], value_keywords)
+            header, rows, corrections = _clean_sheet(wb[sn], value_keywords, fy_xx)
+            for orig, corr in corrections:
+                info = {
+                    "segment": segment,
+                    "supplier": supplier_name,
+                    "sheet": sn,
+                    "original": orig,
+                    "corrected": corr,
+                }
+                all_corrections.append(info)
+                if log_fn:
+                    log_fn(
+                        f"  [CORRECTED] [{segment}] {supplier_name} ({sn}): "
+                        f'"{orig}" → "{corr}"'
+                    )
             if header and rows:
                 all_data.append((header, rows))
         wb.close()
@@ -267,12 +347,13 @@ def consolidate_segment(
         for c in unified_header
     ]
 
-    # ── Pass 3: write aligned rows ──
+    # ── Pass 3: build aligned rows (deduplicated) ──
     wb_out = Workbook()
     ws_out = wb_out.active
     ws_out.title = fy
     ws_out.append(unified_header)
 
+    seen_rows: set[tuple] = set()
     for header, rows in all_data:
         # Map each column in this sheet → index in unified_header
         sheet_to_unified: dict[int, int] = {}
@@ -289,6 +370,10 @@ def consolidate_segment(
             for sheet_pos, unified_pos in sheet_to_unified.items():
                 if sheet_pos < len(row):
                     aligned[unified_pos] = row[sheet_pos]
+            key = tuple(aligned)
+            if key in seen_rows:
+                continue
+            seen_rows.add(key)
             ws_out.append(aligned)
 
     today = date.today().strftime("%Y%m%d")
@@ -297,7 +382,7 @@ def consolidate_segment(
     output_path.mkdir(parents=True, exist_ok=True)
     _drop_unnamed_cols(ws_out)
     wb_out.save(out_file)
-    return out_file
+    return out_file, all_corrections
 
 
 # ── all segments consolidation ───────────────────────────────────────────────
@@ -314,6 +399,7 @@ def consolidate_all(
     ws_out.title = "All"
 
     header_written = False
+    all_data_rows: list[list] = []
 
     for seg in ("NB", "DT", "Peripheral"):
         seg_file = segment_files.get(seg)
@@ -335,8 +421,16 @@ def consolidate_all(
         else:
             data_rows = rows[1:]
         for row in data_rows:
-            ws_out.append(list(row))
+            all_data_rows.append(list(row))
         wb.close()
+
+    seen_rows: set[tuple] = set()
+    for row in all_data_rows:
+        key = tuple(row)
+        if key in seen_rows:
+            continue
+        seen_rows.add(key)
+        ws_out.append(row)
 
     today = date.today().strftime("%Y%m%d")
     filename = f"Final Consolidated Master price table_{today}.xlsx"
